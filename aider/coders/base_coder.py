@@ -966,9 +966,16 @@ class Coder:
 
         chunks = ChatChunks()
 
-        chunks.system = [
-            dict(role="system", content=main_sys),
-        ]
+        if self.main_model.use_system_prompt:
+            chunks.system = [
+                dict(role="system", content=main_sys),
+            ]
+        else:
+            chunks.system = [
+                dict(role="user", content=main_sys),
+                dict(role="assistant", content="Ok."),
+            ]
+
         chunks.examples = example_messages
 
         self.summarize_end()
@@ -1094,7 +1101,7 @@ class Coder:
             utils.show_messages(messages, functions=self.functions)
 
         self.multi_response_content = ""
-        self.mdstream=self.io.assistant_output("", self.stream)
+        self.mdstream = self.io.assistant_output("", self.stream)
 
         retry_delay = 0.125
 
@@ -1374,6 +1381,11 @@ class Coder:
 
         self.io.log_llm_history("TO LLM", format_messages(messages))
 
+        if self.main_model.use_temperature:
+            temp = self.temperature
+        else:
+            temp = None
+
         completion = None
         try:
             hash_object, completion = send_completion(
@@ -1381,7 +1393,7 @@ class Coder:
                 messages,
                 functions,
                 self.stream,
-                self.temperature,
+                temp,
                 extra_headers=model.extra_headers,
                 max_tokens=model.max_tokens,
             )
@@ -1867,7 +1879,6 @@ class Coder:
                     message=commit_message,
                 )
 
-            self.io.tool_output("No changes made to git tracked files.")
             return self.gpt_prompts.files_content_gpt_no_edits
         except ANY_GIT_ERROR as err:
             self.io.tool_error(f"Unable to commit: {str(err)}")

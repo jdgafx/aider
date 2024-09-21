@@ -77,6 +77,9 @@ class ModelSettings:
     max_tokens: Optional[int] = None
     cache_control: bool = False
     caches_by_default: bool = False
+    use_system_prompt: bool = True
+    use_temperature: bool = True
+    streaming: bool = True
 
 
 # https://platform.openai.com/docs/models/gpt-4-and-gpt-4-turbo
@@ -339,6 +342,19 @@ MODEL_SETTINGS = [
         weak_model_name="command-r-plus",
         use_repo_map=True,
     ),
+    # New Cohere models
+    ModelSettings(
+        "command-r-08-2024",
+        "whole",
+        weak_model_name="command-r-08-2024",
+        use_repo_map=True,
+    ),
+    ModelSettings(
+        "command-r-plus-08-2024",
+        "whole",
+        weak_model_name="command-r-plus-08-2024",
+        use_repo_map=True,
+    ),
     # Groq llama3
     ModelSettings(
         "groq/llama3-70b-8192",
@@ -412,6 +428,66 @@ MODEL_SETTINGS = [
         lazy=True,
         reminder="sys",
     ),
+    ModelSettings(
+        "openai/o1-mini",
+        "whole",
+        weak_model_name="openai/gpt-4o-mini",
+        use_repo_map=True,
+        reminder="user",
+        use_system_prompt=False,
+        use_temperature=False,
+        streaming=False,
+    ),
+    ModelSettings(
+        "o1-mini",
+        "whole",
+        weak_model_name="gpt-4o-mini",
+        use_repo_map=True,
+        reminder="user",
+        use_system_prompt=False,
+        use_temperature=False,
+        streaming=False,
+    ),
+    ModelSettings(
+        "openai/o1-preview",
+        "diff",
+        weak_model_name="openai/gpt-4o-mini",
+        use_repo_map=True,
+        reminder="user",
+        use_system_prompt=False,
+        use_temperature=False,
+        streaming=False,
+    ),
+    ModelSettings(
+        "o1-preview",
+        "diff",
+        weak_model_name="gpt-4o-mini",
+        use_repo_map=True,
+        reminder="user",
+        use_system_prompt=False,
+        use_temperature=False,
+        streaming=False,
+    ),
+    ModelSettings(
+        "openrouter/openai/o1-mini",
+        "whole",
+        weak_model_name="openrouter/openai/gpt-4o-mini",
+        use_repo_map=True,
+        reminder="user",
+        use_system_prompt=False,
+        use_temperature=False,
+        streaming=False,
+    ),
+    ModelSettings(
+        "openrouter/openai/o1-preview",
+        "diff",
+        weak_model_name="openrouter/openai/gpt-4o-mini",
+        use_repo_map=True,
+        reminder="user",
+        use_system_prompt=False,
+        use_temperature=False,
+        streaming=False,
+    ),
 ]
 
 
@@ -438,21 +514,28 @@ def get_model_info(model):
     if not litellm._lazy_module:
         cache_dir = Path.home() / ".aider" / "caches"
         cache_file = cache_dir / "model_prices_and_context_window.json"
-        cache_dir.mkdir(parents=True, exist_ok=True)
 
-        current_time = time.time()
-        cache_age = (
-            current_time - cache_file.stat().st_mtime if cache_file.exists() else float("inf")
-        )
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            use_cache = True
+        except OSError:
+            # If we can't create the cache directory, we'll skip using the cache
+            use_cache = False
 
-        if cache_age < 60 * 60 * 24:
-            try:
-                content = json.loads(cache_file.read_text())
-                res = get_model_flexible(model, content)
-                if res:
-                    return res
-            except Exception as ex:
-                print(str(ex))
+        if use_cache:
+            current_time = time.time()
+            cache_age = (
+                current_time - cache_file.stat().st_mtime if cache_file.exists() else float("inf")
+            )
+
+            if cache_age < 60 * 60 * 24:
+                try:
+                    content = json.loads(cache_file.read_text())
+                    res = get_model_flexible(model, content)
+                    if res:
+                        return res
+                except Exception as ex:
+                    print(str(ex))
 
         import requests
 
@@ -460,7 +543,12 @@ def get_model_info(model):
             response = requests.get(model_info_url, timeout=5)
             if response.status_code == 200:
                 content = response.json()
-                cache_file.write_text(json.dumps(content, indent=4))
+                if use_cache:
+                    try:
+                        cache_file.write_text(json.dumps(content, indent=4))
+                    except OSError:
+                        # If we can't write to the cache file, we'll just skip caching
+                        pass
                 res = get_model_flexible(model, content)
                 if res:
                     return res
