@@ -1,18 +1,70 @@
 
 # Release history
 
-### main branch
+### v0.59.0
+
+- Improvements to `/read-only`:
+  - Now supports shell-style auto-complete of the full file system.
+  - Still auto-completes the full paths of the repo files like `/add`.
+  - Now supports globs like `src/**/*.py`
+- Renamed `--yes` to `--yes-always`.
+  - Now uses `AIDER_YES_ALWAYS` env var and `yes-always:` yaml key.
+  - Existing YAML and .env files will need to be updated.
+  - Can still abbreviate to `--yes` on the command line.
+- Config file now uses standard YAML list syntax with `  - list entries`, one per line.  
+- `/settings` now includes the same announcement lines that would print at launch.
+- Sanity checks the `--editor-model` on launch now, same as main and weak models.
+- Added `--skip-sanity-check-repo` switch to speedup launch in large repos.
+- Bugfix so architect mode handles Control-C properly.
+- Repo-map is deterministic now, with improved caching logic.
+- Improved commit message prompt.
+- Aider wrote 77% of the code in this release.
+
+### Aider v0.58.1
+
+- Fixed bug where cache warming pings caused subsequent user messages to trigger a tight loop of LLM requests.
+
+### Aider v0.58.0
+
+- [Use a pair of Architect/Editor models for improved coding](https://aider.chat/2024/09/26/architect.html)
+  - Use a strong reasoning model like o1-preview as your Architect.
+  - Use a cheaper, faster model like gpt-4o as your Editor.
+- New `--o1-preview` and `--o1-mini` shortcuts.
+- Support for new Gemini 002 models.
+- Better support for Qwen 2.5 models.
+- Many confirmation questions can be skipped for the rest of the session with "(D)on't ask again" response.
+- Autocomplete for `/read-only` supports the entire filesystem.
+- New settings for completion menu colors.
+- New `/copy` command to copy the last LLM response to the clipboard.
+- Renamed `/clipboard` to `/paste`.
+- Will now follow HTTP redirects when scraping urls.
+- New `--voice-format` switch to send voice audio as wav/mp3/webm, by @mbailey.
+- ModelSettings takes `extra_params` dict to specify any extras to pass to `litellm.completion()`.
+- Support for cursor shapes when in vim mode.
+- Numerous bug fixes.
+- Aider wrote 53% of the code in this release.
+
+### Aider v0.57.1
+
+- Fixed dependency conflict between aider-chat[help] and [playwright].
+
+### Aider v0.57.0
 
 - Support for OpenAI o1 models:
+  - o1-preview now works well with diff edit format.
+  - o1-preview with diff now matches SOTA leaderboard result with whole edit format.
   - `aider --model o1-mini`
   - `aider --model o1-preview`
 - On Windows, `/run` correctly uses PowerShell or cmd.exe.
-- Support for new 08-2024 Cohere models.
+- Support for new 08-2024 Cohere models, by @jalammar.
 - Can now recursively add directories with `/read-only`.
 - User input prompts now fall back to simple `input()` if `--no-pretty` or a Windows console is not available.
 - Improved sanity check of git repo on startup.
 - Improvements to prompt cache chunking strategy.
-- Bugfix to remove spurious "No changes made to git tracked files."
+- Removed "No changes made to git tracked files".
+- Numerous bug fixes for corner case crashes.
+- Updated all dependency versions.
+- Aider wrote 70% of the code in this release.
 
 ### Aider v0.56.0
 
@@ -656,7 +708,7 @@
 ### Aider v0.14.0
 
 - [Support for Claude2 and other LLMs via OpenRouter](https://aider.chat/docs/faq.html#accessing-other-llms-with-openrouter) by @joshuavial
-- Documentation for [running the aider benchmarking suite](https://github.com/paul-gauthier/aider/tree/main/benchmark)
+- Documentation for [running the aider benchmarking suite](https://github.com/Aider-AI/aider/tree/main/benchmark)
 - Aider now requires Python >= 3.9
 
 

@@ -3,6 +3,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.document import Document
+
 from aider.dump import dump  # noqa: F401
 from aider.io import AutoCompleter, ConfirmGroup, InputOutput
 from aider.utils import ChdirTemporaryDirectory
@@ -13,6 +16,62 @@ class TestInputOutput(unittest.TestCase):
         with patch.dict(os.environ, {"NO_COLOR": "1"}):
             io = InputOutput()
             self.assertFalse(io.pretty)
+
+    def test_autocompleter_get_command_completions(self):
+        # Step 3: Mock the commands object
+        commands = MagicMock()
+        commands.get_commands.return_value = ["/help", "/add", "/drop"]
+        commands.matching_commands.side_effect = lambda inp: (
+            [cmd for cmd in commands.get_commands() if cmd.startswith(inp.strip().split()[0])],
+            inp.strip().split()[0],
+            " ".join(inp.strip().split()[1:]),
+        )
+        commands.get_raw_completions.return_value = None
+        commands.get_completions.side_effect = lambda cmd: (
+            ["file1.txt", "file2.txt"] if cmd == "/add" else None
+        )
+
+        # Step 4: Create an instance of AutoCompleter
+        root = ""
+        rel_fnames = []
+        addable_rel_fnames = []
+        autocompleter = AutoCompleter(
+            root=root,
+            rel_fnames=rel_fnames,
+            addable_rel_fnames=addable_rel_fnames,
+            commands=commands,
+            encoding="utf-8",
+        )
+
+        # Step 5: Set up test cases
+        test_cases = [
+            # Input text, Expected completion texts
+            ("/", ["/help", "/add", "/drop"]),
+            ("/a", ["/add"]),
+            ("/add f", ["file1.txt", "file2.txt"]),
+        ]
+
+        # Step 6: Iterate through test cases
+        for text, expected_completions in test_cases:
+            document = Document(text=text)
+            complete_event = CompleteEvent()
+            words = text.strip().split()
+
+            # Call get_command_completions
+            completions = list(
+                autocompleter.get_command_completions(
+                    document,
+                    complete_event,
+                    text,
+                    words,
+                )
+            )
+
+            # Extract completion texts
+            completion_texts = [comp.text for comp in completions]
+
+            # Assert that the completions match expected results
+            self.assertEqual(set(completion_texts), set(expected_completions))
 
     def test_autocompleter_with_non_existent_file(self):
         root = ""
@@ -159,22 +218,45 @@ class TestInputOutput(unittest.TestCase):
         mock_input.assert_called_once()
         mock_input.reset_mock()
 
-    def test_get_command_completions(self):
-        root = ""
-        rel_fnames = []
-        addable_rel_fnames = []
-        commands = MagicMock()
-        commands.get_commands.return_value = ["model", "chat", "help"]
-        commands.get_completions.return_value = ["gpt-3.5-turbo", "gpt-4"]
-        commands.matching_commands.return_value = (["/model", "/models"], None, None)
+    @patch("builtins.input", side_effect=["d"])
+    def test_confirm_ask_allow_never(self, mock_input):
+        io = InputOutput(pretty=False)
 
-        autocompleter = AutoCompleter(root, rel_fnames, addable_rel_fnames, commands, "utf-8")
+        # First call: user selects "Don't ask again"
+        result = io.confirm_ask("Are you sure?", allow_never=True)
+        self.assertFalse(result)
+        mock_input.assert_called_once()
+        self.assertIn(("Are you sure?", None), io.never_prompts)
 
-        # Test case for "/model gpt"
-        result = autocompleter.get_command_completions("/model gpt", ["/model", "gpt"])
-        self.assertEqual(result, ["gpt-3.5-turbo", "gpt-4"])
-        commands.get_completions.assert_called_once_with("/model")
-        commands.matching_commands.assert_called_once_with("/model")
+        # Reset the mock to check for further calls
+        mock_input.reset_mock()
+
+        # Second call: should not prompt, immediately return False
+        result = io.confirm_ask("Are you sure?", allow_never=True)
+        self.assertFalse(result)
+        mock_input.assert_not_called()
+
+        # Test with subject parameter
+        mock_input.reset_mock()
+        mock_input.side_effect = ["d"]
+        result = io.confirm_ask("Confirm action?", subject="Subject Text", allow_never=True)
+        self.assertFalse(result)
+        mock_input.assert_called_once()
+        self.assertIn(("Confirm action?", "Subject Text"), io.never_prompts)
+
+        # Subsequent call with the same question and subject
+        mock_input.reset_mock()
+        result = io.confirm_ask("Confirm action?", subject="Subject Text", allow_never=True)
+        self.assertFalse(result)
+        mock_input.assert_not_called()
+
+        # Test that allow_never=False does not add to never_prompts
+        mock_input.reset_mock()
+        mock_input.side_effect = ["d", "n"]
+        result = io.confirm_ask("Do you want to proceed?", allow_never=False)
+        self.assertFalse(result)
+        self.assertEqual(mock_input.call_count, 2)
+        self.assertNotIn(("Do you want to proceed?", None), io.never_prompts)
 
 
 if __name__ == "__main__":

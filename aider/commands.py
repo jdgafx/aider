@@ -1,13 +1,17 @@
+import glob
 import os
 import re
 import subprocess
 import sys
 import tempfile
 from collections import OrderedDict
+from os.path import expanduser
 from pathlib import Path
 
 import pyperclip
 from PIL import Image, ImageGrab
+from prompt_toolkit.completion import Completion, PathCompleter
+from prompt_toolkit.document import Document
 
 from aider import models, prompts, voice
 from aider.format_settings import format_settings
@@ -162,6 +166,14 @@ class Commands:
 
     def is_command(self, inp):
         return inp[0] in "/!"
+
+    def get_raw_completions(self, cmd):
+        assert cmd.startswith("/")
+        cmd = cmd[1:]
+        cmd = cmd.replace("-", "_")
+
+        raw_completer = getattr(self, f"completions_raw_{cmd}", None)
+        return raw_completer
 
     def get_completions(self, cmd):
         assert cmd.startswith("/")
@@ -569,8 +581,62 @@ class Commands:
             fname = f'"{fname}"'
         return fname
 
-    def completions_read_only(self):
-        return self.completions_add()
+    def completions_raw_read_only(self, document, complete_event):
+        # Get the text before the cursor
+        text = document.text_before_cursor
+
+        # Skip the first word and the space after it
+        after_command = text.split()[-1]
+
+        # Create a new Document object with the text after the command
+        new_document = Document(after_command, cursor_position=len(after_command))
+
+        def get_paths():
+            return [self.coder.root] if self.coder.root else None
+
+        path_completer = PathCompleter(
+            get_paths=get_paths,
+            only_directories=False,
+            expanduser=True,
+        )
+
+        # Adjust the start_position to replace all of 'after_command'
+        adjusted_start_position = -len(after_command)
+
+        # Collect all completions
+        all_completions = []
+
+        # Iterate over the completions and modify them
+        for completion in path_completer.get_completions(new_document, complete_event):
+            quoted_text = self.quote_fname(after_command + completion.text)
+            all_completions.append(
+                Completion(
+                    text=quoted_text,
+                    start_position=adjusted_start_position,
+                    display=completion.display,
+                    style=completion.style,
+                    selected_style=completion.selected_style,
+                )
+            )
+
+        # Add completions from the 'add' command
+        add_completions = self.completions_add()
+        for completion in add_completions:
+            if after_command in completion:
+                all_completions.append(
+                    Completion(
+                        text=completion,
+                        start_position=adjusted_start_position,
+                        display=completion,
+                    )
+                )
+
+        # Sort all completions based on their text
+        sorted_completions = sorted(all_completions, key=lambda c: c.text)
+
+        # Yield the sorted completions
+        for completion in sorted_completions:
+            yield completion
 
     def completions_add(self):
         files = set(self.coder.get_all_relative_files())
@@ -588,7 +654,7 @@ class Commands:
             else:
                 try:
                     raw_matched_files = list(Path(self.coder.root).glob(pattern))
-                except IndexError:
+                except (IndexError, AttributeError):
                     raw_matched_files = []
         except ValueError as err:
             self.io.tool_error(f"Error matching {pattern}: {err}")
@@ -668,7 +734,8 @@ class Commands:
                 continue
 
             if abs_file_path in self.coder.abs_fnames:
-                self.io.tool_warning(f"{matched_file} is already in the chat")
+                self.io.tool_error(f"{matched_file} is already in the chat as an editable file")
+                continue
             elif abs_file_path in self.coder.abs_read_only_fnames:
                 if self.coder.repo and self.coder.repo.path_in_repo(matched_file):
                     self.coder.abs_read_only_fnames.remove(abs_file_path)
@@ -735,7 +802,7 @@ class Commands:
                     self.io.tool_output(f"Removed {matched_file} from the chat")
 
     def cmd_git(self, args):
-        "Run a git command"
+        "Run a git command (output excluded from chat)"
         combined_output = None
         try:
             args = "git " + args
@@ -945,6 +1012,10 @@ class Commands:
         "Ask for changes to your code"
         return self._generic_chat_command(args, self.coder.main_model.edit_format)
 
+    def cmd_architect(self, args):
+        "Enter architect mode to discuss high-level design and architecture"
+        return self._generic_chat_command(args, "architect")
+
     def _generic_chat_command(self, args, edit_format):
         if not args.strip():
             self.io.tool_error(f"Please provide a question or topic for the {edit_format} chat.")
@@ -997,7 +1068,7 @@ class Commands:
                 self.io.tool_error("To use /voice you must provide an OpenAI API key.")
                 return
             try:
-                self.voice = voice.Voice()
+                self.voice = voice.Voice(audio_format=self.args.voice_format)
             except voice.SoundDeviceError:
                 self.io.tool_error(
                     "Unable to import `sounddevice` and/or `soundfile`, is portaudio installed?"
@@ -1035,8 +1106,9 @@ class Commands:
 
         return text
 
-    def cmd_clipboard(self, args):
-        "Add image/text from the clipboard to the chat (optionally provide a name for the image)"
+    def cmd_paste(self, args):
+        """Paste image/text from the clipboard into the chat.\
+        Optionally provide a name for the image."""
         try:
             # Check for image first
             image = ImageGrab.grabclipboard()
@@ -1091,27 +1163,34 @@ class Commands:
             return
 
         filenames = parse_quoted_filenames(args)
-        for word in filenames:
-            # Expand the home directory if the path starts with "~"
-            expanded_path = os.path.expanduser(word)
-            abs_path = self.coder.abs_root_path(expanded_path)
+        for pattern in filenames:
+            # Expand tilde for home directory
+            expanded_pattern = expanduser(pattern)
 
-            if not os.path.exists(abs_path):
-                self.io.tool_error(f"Path not found: {abs_path}")
+            expanded_paths = glob.glob(expanded_pattern, recursive=True)
+            if not expanded_paths:
+                self.io.tool_error(f"No matches found for: {pattern}")
                 continue
 
-            if os.path.isfile(abs_path):
-                self._add_read_only_file(abs_path, word)
-            elif os.path.isdir(abs_path):
-                self._add_read_only_directory(abs_path, word)
-            else:
-                self.io.tool_error(f"Not a file or directory: {abs_path}")
+            for path in expanded_paths:
+                abs_path = self.coder.abs_root_path(path)
+                if os.path.isfile(abs_path):
+                    self._add_read_only_file(abs_path, path)
+                elif os.path.isdir(abs_path):
+                    self._add_read_only_directory(abs_path, path)
+                else:
+                    self.io.tool_error(f"Not a file or directory: {abs_path}")
 
     def _add_read_only_file(self, abs_path, original_name):
-        if abs_path in self.coder.abs_fnames:
-            self.io.tool_error(f"{original_name} is already in the chat as an editable file")
-        elif abs_path in self.coder.abs_read_only_fnames:
+        if abs_path in self.coder.abs_read_only_fnames:
             self.io.tool_error(f"{original_name} is already in the chat as a read-only file")
+            return
+        elif abs_path in self.coder.abs_fnames:
+            self.coder.abs_fnames.remove(abs_path)
+            self.coder.abs_read_only_fnames.add(abs_path)
+            self.io.tool_output(
+                f"Moved {original_name} from editable to read-only files in the chat"
+            )
         else:
             self.coder.abs_read_only_fnames.add(abs_path)
             self.io.tool_output(f"Added {original_name} to read-only files.")
@@ -1152,7 +1231,36 @@ class Commands:
     def cmd_settings(self, args):
         "Print out the current settings"
         settings = format_settings(self.parser, self.args)
-        self.io.tool_output(settings)
+        announcements = "\n".join(self.coder.get_announcements())
+        output = f"{announcements}\n{settings}"
+        self.io.tool_output(output)
+
+    def cmd_copy(self, args):
+        "Copy the last assistant message to the clipboard"
+        all_messages = self.coder.done_messages + self.coder.cur_messages
+        assistant_messages = [msg for msg in reversed(all_messages) if msg["role"] == "assistant"]
+
+        if not assistant_messages:
+            self.io.tool_error("No assistant messages found to copy.")
+            return
+
+        last_assistant_message = assistant_messages[0]["content"]
+
+        try:
+            pyperclip.copy(last_assistant_message)
+            preview = (
+                last_assistant_message[:50] + "..."
+                if len(last_assistant_message) > 50
+                else last_assistant_message
+            )
+            self.io.tool_output(f"Copied last assistant message to clipboard. Preview: {preview}")
+        except pyperclip.PyperclipException as e:
+            self.io.tool_error(f"Failed to copy to clipboard: {str(e)}")
+            self.io.tool_output(
+                "You may need to install xclip or xsel on Linux, or pbcopy on macOS."
+            )
+        except Exception as e:
+            self.io.tool_error(f"An unexpected error occurred while copying to clipboard: {str(e)}")
 
     def cmd_report(self, args):
         "Report a problem by opening a GitHub Issue"

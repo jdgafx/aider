@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from prompt_toolkit.completion import Completer, Completion, ThreadedCompleter
+from prompt_toolkit.cursor_shapes import ModalCursorShapeConfig
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
@@ -15,9 +16,10 @@ from prompt_toolkit.styles import Style
 from pygments.lexers import MarkdownLexer, guess_lexer_for_filename
 from pygments.token import Token
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.style import Style as RichStyle
 from rich.text import Text
-from rich.markdown import Markdown
+
 from aider.mdstream import MarkdownStream
 
 from .dump import dump  # noqa: F401
@@ -91,17 +93,16 @@ class AutoCompleter(Completer):
                 (token[1], f"`{token[1]}`") for token in tokens if token[0] in Token.Name
             )
 
-    def get_command_completions(self, text, words):
-        candidates = []
+    def get_command_completions(self, document, complete_event, text, words):
         if len(words) == 1 and not text[-1].isspace():
             partial = words[0].lower()
             candidates = [cmd for cmd in self.command_names if cmd.startswith(partial)]
-            return candidates
+            for candidate in sorted(candidates):
+                yield Completion(candidate, start_position=-len(words[-1]))
+            return
 
-        if len(words) <= 1:
-            return []
-        if text[-1].isspace():
-            return []
+        if len(words) <= 1 or text[-1].isspace():
+            return
 
         cmd = words[0]
         partial = words[-1].lower()
@@ -110,6 +111,11 @@ class AutoCompleter(Completer):
         if len(matches) == 1:
             cmd = matches[0]
         elif cmd not in matches:
+            return
+
+        raw_completer = self.commands.get_raw_completions(cmd)
+        if raw_completer:
+            yield from raw_completer(document, complete_event)
             return
 
         if cmd not in self.command_completions:
@@ -122,7 +128,8 @@ class AutoCompleter(Completer):
             return
 
         candidates = [word for word in candidates if partial in word.lower()]
-        return candidates
+        for candidate in sorted(candidates):
+            yield Completion(candidate, start_position=-len(words[-1]))
 
     def get_completions(self, document, complete_event):
         self.tokenize()
@@ -137,11 +144,8 @@ class AutoCompleter(Completer):
             return
 
         if text[0] == "/":
-            candidates = self.get_command_completions(text, words)
-            if candidates is not None:
-                for candidate in sorted(candidates):
-                    yield Completion(candidate, start_position=-len(words[-1]))
-                return
+            yield from self.get_command_completions(document, complete_event, text, words)
+            return
 
         candidates = self.words
         candidates.update(set(self.fname_to_rel_fnames))
@@ -179,12 +183,17 @@ class InputOutput:
         tool_error_color="red",
         tool_warning_color="#FFA500",
         assistant_output_color="blue",
+        completion_menu_color=None,
+        completion_menu_bg_color=None,
+        completion_menu_current_color=None,
+        completion_menu_current_bg_color=None,
         code_theme="default",
         encoding="utf-8",
         dry_run=False,
         llm_history_file=None,
         editingmode=EditingMode.EMACS,
     ):
+        self.never_prompts = set()
         self.editingmode = editingmode
         no_color = os.environ.get("NO_COLOR")
         if no_color is not None and no_color != "":
@@ -195,6 +204,11 @@ class InputOutput:
         self.tool_error_color = tool_error_color if pretty else None
         self.tool_warning_color = tool_warning_color if pretty else None
         self.assistant_output_color = assistant_output_color
+        self.completion_menu_color = completion_menu_color if pretty else None
+        self.completion_menu_bg_color = completion_menu_bg_color if pretty else None
+        self.completion_menu_current_color = completion_menu_current_color if pretty else None
+        self.completion_menu_current_bg_color = completion_menu_current_bg_color if pretty else None
+
         self.code_theme = code_theme
 
         self.input = input
@@ -227,6 +241,7 @@ class InputOutput:
                 "output": self.output,
                 "lexer": PygmentsLexer(MarkdownLexer),
                 "editing_mode": self.editingmode,
+                "cursor": ModalCursorShapeConfig(),
             }
             if self.input_history_file is not None:
                 session_kwargs["history"] = FileHistory(self.input_history_file)
@@ -238,6 +253,41 @@ class InputOutput:
                 self.tool_error(f"Can't initialize prompt toolkit: {err}")  # non-pretty
         else:
             self.console = Console(force_terminal=False, no_color=True)  # non-pretty
+
+    def _get_style(self):
+        style_dict = {}
+        if not self.pretty:
+            return Style.from_dict(style_dict)
+
+        if self.user_input_color:
+            style_dict.setdefault("", self.user_input_color)
+            style_dict.update(
+                {
+                    "pygments.literal.string": f"bold italic {self.user_input_color}",
+                }
+            )
+
+        # Conditionally add 'completion-menu' style
+        completion_menu_style = []
+        if self.completion_menu_bg_color:
+            completion_menu_style.append(f"bg:{self.completion_menu_bg_color}")
+        if self.completion_menu_color:
+            completion_menu_style.append(self.completion_menu_color)
+        if completion_menu_style:
+            style_dict["completion-menu"] = " ".join(completion_menu_style)
+
+        # Conditionally add 'completion-menu.completion.current' style
+        completion_menu_current_style = []
+        if self.completion_menu_current_bg_color:
+            completion_menu_current_style.append(f"bg:{self.completion_menu_current_bg_color}")
+        if self.completion_menu_current_color:
+            completion_menu_current_style.append(self.completion_menu_current_color)
+        if completion_menu_current_style:
+            style_dict["completion-menu.completion.current"] = " ".join(
+                completion_menu_current_style
+            )
+
+        return Style.from_dict(style_dict)
 
     def read_image(self, filename):
         try:
@@ -316,15 +366,7 @@ class InputOutput:
         inp = ""
         multiline_input = False
 
-        if self.user_input_color and self.pretty:
-            style = Style.from_dict(
-                {
-                    "": self.user_input_color,
-                    "pygments.literal.string": f"bold italic {self.user_input_color}",
-                }
-            )
-        else:
-            style = None
+        style = self._get_style()
 
         completer_instance = ThreadedCompleter(
             AutoCompleter(
@@ -338,6 +380,11 @@ class InputOutput:
         )
 
         kb = KeyBindings()
+
+        @kb.add("c-space")
+        def _(event):
+            "Ignore Ctrl when pressing space bar"
+            event.current_buffer.insert_text(" ")
 
         @kb.add("escape", "c-m", eager=True)
         def _(event):
@@ -431,12 +478,25 @@ class InputOutput:
         self.append_chat_history(hist)
 
     def confirm_ask(
-        self, question, default="y", subject=None, explicit_yes_required=False, group=None
+        self,
+        question,
+        default="y",
+        subject=None,
+        explicit_yes_required=False,
+        group=None,
+        allow_never=False,
     ):
         self.num_user_asks += 1
 
+        question_id = (question, subject)
+
+        if question_id in self.never_prompts:
+            return False
+
         if group and not group.show_group:
             group = None
+        if group:
+            allow_never = True
 
         valid_responses = ["yes", "no"]
         options = " (Y)es/(N)o"
@@ -446,6 +506,10 @@ class InputOutput:
                 valid_responses.append("all")
             options += "/(S)kip all"
             valid_responses.append("skip")
+        if allow_never:
+            options += "/(D)on't ask again"
+            valid_responses.append("don't")
+
         question += options + " [Yes]: "
 
         if subject:
@@ -459,10 +523,7 @@ class InputOutput:
             else:
                 self.tool_output(subject, bold=True)
 
-        if self.pretty and self.user_input_color:
-            style = {"": self.user_input_color}
-        else:
-            style = dict()
+        style = self._get_style()
 
         def is_valid_response(text):
             if not text:
@@ -481,7 +542,7 @@ class InputOutput:
                 if self.prompt_session:
                     res = self.prompt_session.prompt(
                         question,
-                        style=Style.from_dict(style),
+                        style=style,
                     )
                 else:
                     res = input(question)
@@ -498,6 +559,12 @@ class InputOutput:
                 self.tool_error(error_message)
 
         res = res.lower()[0]
+
+        if res == "d" and allow_never:
+            self.never_prompts.add(question_id)
+            hist = f"{question.strip()} {res}"
+            self.append_chat_history(hist, linebreak=True, blockquote=True)
+            return False
 
         if explicit_yes_required:
             is_yes = res == "y"
@@ -525,10 +592,7 @@ class InputOutput:
             self.tool_output()
             self.tool_output(subject, bold=True)
 
-        if self.pretty and self.user_input_color:
-            style = Style.from_dict({"": self.user_input_color})
-        else:
-            style = None
+        style = self._get_style()
 
         if self.yes is True:
             res = "yes"
@@ -586,27 +650,30 @@ class InputOutput:
         style = RichStyle(**style)
         self.console.print(*messages, style=style)
 
-    def assistant_output(self, message, stream=False):
-        mdStream = None
+    def get_assistant_mdstream(self):
+        mdargs = dict(style=self.assistant_output_color, code_theme=self.code_theme)
+        mdStream = MarkdownStream(mdargs=mdargs)
+        return mdStream
+
+    def assistant_output(self, message, pretty=None):
         show_resp = message
-        
-        if self.pretty:
-            if stream:
-                mdargs = dict(style=self.assistant_output_color, code_theme=self.code_theme)
-                mdStream = MarkdownStream(mdargs=mdargs)
-            else:
-                show_resp = Markdown(
-                    message, style=self.assistant_output_color, code_theme=self.code_theme
-                )
+
+        # Coder will force pretty off if fence is not triple-backticks
+        if pretty is None:
+            pretty = self.pretty
+
+        if pretty:
+            show_resp = Markdown(
+                message, style=self.assistant_output_color, code_theme=self.code_theme
+            )
         else:
             show_resp = Text(message or "<no response>")
 
         self.console.print(show_resp)
-        return mdStream
-        
+
     def print(self, message=""):
         print(message)
-        
+
     def append_chat_history(self, text, linebreak=False, blockquote=False, strip=True):
         if blockquote:
             if strip:
@@ -620,7 +687,7 @@ class InputOutput:
             text += "\n"
         if self.chat_history_file is not None:
             try:
-                with self.chat_history_file.open("a", encoding=self.encoding) as f:
+                with self.chat_history_file.open("a", encoding=self.encoding, errors="ignore") as f:
                     f.write(text)
             except (PermissionError, OSError):
                 self.tool_error(

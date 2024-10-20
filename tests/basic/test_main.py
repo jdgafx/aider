@@ -22,6 +22,7 @@ class TestMain(TestCase):
     def setUp(self):
         self.original_env = os.environ.copy()
         os.environ["OPENAI_API_KEY"] = "deadbeef"
+        os.environ["AIDER_CHECK_UPDATE"] = "false"
         self.original_cwd = os.getcwd()
         self.tempdir_obj = IgnorantTemporaryDirectory()
         self.tempdir = self.tempdir_obj.name
@@ -137,7 +138,7 @@ class TestMain(TestCase):
 
             gitignore.write_text("one\ntwo\n")
             check_gitignore(cwd, io)
-            self.assertEqual("one\ntwo\n.aider*\n", gitignore.read_text())
+            self.assertEqual("one\ntwo\n.aider*\n.env\n", gitignore.read_text())
             del os.environ["GIT_CONFIG_GLOBAL"]
 
     def test_main_args(self):
@@ -239,7 +240,7 @@ class TestMain(TestCase):
                 patch("aider.main.check_version") as mock_check_version,
                 patch("aider.main.InputOutput") as mock_input_output,
             ):
-                main(["--exit"], input=DummyInput(), output=DummyOutput())
+                main(["--exit", "--check-update"], input=DummyInput(), output=DummyOutput())
                 mock_check_version.assert_called_once()
                 mock_input_output.assert_called_once()
 

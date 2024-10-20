@@ -10,7 +10,15 @@ from aider.sendchat import simple_send_with_retries
 
 from .dump import dump  # noqa: F401
 
-ANY_GIT_ERROR = (git.exc.ODBError, git.exc.GitError, OSError, IndexError, BufferError)
+ANY_GIT_ERROR = (
+    git.exc.ODBError,
+    git.exc.GitError,
+    OSError,
+    IndexError,
+    BufferError,
+    TypeError,
+    ValueError,
+)
 
 
 class GitRepo:
@@ -185,7 +193,7 @@ class GitRepo:
             if max_tokens and num_tokens > max_tokens:
                 continue
             commit_message = simple_send_with_retries(
-                model.name, messages, extra_headers=model.extra_headers
+                model.name, messages, extra_params=model.extra_params
             )
             if commit_message:
                 break
@@ -336,7 +344,14 @@ class GitRepo:
     def ignored_file_raw(self, fname):
         if self.subtree_only:
             fname_path = Path(self.normalize_path(fname))
-            cwd_path = Path.cwd().resolve().relative_to(Path(self.root).resolve())
+            try:
+                cwd_path = Path.cwd().resolve().relative_to(Path(self.root).resolve())
+            except ValueError:
+                # Issue #1524
+                # ValueError: 'C:\\dev\\squid-certbot' is not in the subpath of
+                # 'C:\\dev\\squid-certbot'
+                # Clearly, fname is not under cwd... so ignore it
+                return True
 
             if cwd_path not in fname_path.parents and fname_path != cwd_path:
                 return True
